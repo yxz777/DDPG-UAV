@@ -1,0 +1,243 @@
+"三个全连接隐藏层，节点数分别为500、250、120，激活函数为relu，初始学习率0.01逐渐衰减到0.001"
+import torch
+import torch.nn as nn
+from globalVars import GlobalVar
+import torch
+import math
+import numpy as np
+import torch.optim as optim
+import matplotlib.pyplot as plt
+
+global_value = GlobalVar()
+N = global_value.N
+M = global_value.M
+K = global_value.K
+
+BAND = global_value.BAND
+P_C_NET_FILE = global_value.P_C_NET_FILE
+P_A_NET_FILE = global_value.P_A_NET_FILE
+T_A_NET_FILE = global_value.T_A_NET_FILE
+T_C_NET_FILE = global_value.T_C_NET_FILE
+HIDDEN_SIZE_1 = global_value.HIDDEN_SIZE_1
+HIDDEN_SIZE_2 = global_value.HIDDEN_SIZE_2
+HIDDEN_SIZE_3 = global_value.HIDDEN_SIZE_3
+HIDDEN_SIZE_4 = global_value.HIDDEN_SIZE_4
+UAV_RATE_MAX = global_value.UAV_RATE_MAX
+UAV_RATE_MIN = global_value.UAV_RATE_MIN
+LEARNING_RATE=global_value.LEARNING_RATE
+BATCH_SIZE=global_value.BATCH_SIZE
+GAMMA=global_value.GAMMA
+
+"""Actor网络创建，输入为信道状态向量，输出为用户的功率值，两层隐藏层"""
+class ActorNet(nn.Module):
+    def __init__(self):
+        super(ActorNet, self).__init__()
+        init_w = 3e-3
+        self.input_size = 3 + K * 2    # 无人机的位置+目标位置+节点位置+路径
+        self.output_size = 1 + 1  #速度与方向
+        self.fc1 = nn.Linear(self.input_size, HIDDEN_SIZE_1)
+        self.dropout1 = nn.Dropout(p=0.5)  # 添加dropout层
+        self.fc2 = nn.Linear(HIDDEN_SIZE_1, HIDDEN_SIZE_2)
+        self.dropout2 = nn.Dropout(p=0.5)  # 添加dropout层
+        self.fc3 = nn.Linear(HIDDEN_SIZE_2, HIDDEN_SIZE_3)
+        self.dropout3 = nn.Dropout(p=0.5)  # 添加dropout层
+        self.fc4 = nn.Linear(HIDDEN_SIZE_3, HIDDEN_SIZE_4)
+        self.dropout4 = nn.Dropout(p=0.5)  # 添加dropout层
+        self.fc5 = nn.Linear(HIDDEN_SIZE_4, self.output_size)
+        # 初始化权重
+        self.fc5.weight.data.uniform_(-init_w, init_w)
+        self.fc5.bias.data.uniform_(-init_w, init_w)
+
+    def forward(self, x):
+        x = x.view(x.size(0), -1)
+        x = self.fc1(x)
+        x = torch.tanh(x)
+        x = self.dropout1(x)  # 应用dropout
+        x = self.fc2(x)
+        x = torch.tanh(x)
+        x = self.dropout2(x)  # 应用dropout
+        x = self.fc3(x)
+        x = torch.tanh(x)
+        x = self.dropout3(x)  # 应用dropout
+        x = self.fc4(x)
+        x = torch.tanh(x)
+        x = self.dropout4(x)  # 应用dropout
+        x = self.fc5(x)
+        x_ = torch.tanh(x)
+        return x_
+
+
+    def predict(self, x, flag):
+        self.eval()
+        x = self.forward(x)
+        #print(x)
+
+        if flag == 0:
+            #train
+            noise = np.random.uniform(low=-1,high=1,size=(2,))
+            lambdax = (torch.sigmoid(x[0][0]) + noise[0])/2
+            lambday = (torch.sigmoid(x[0][1]) + noise[1])/2
+        else:
+            #test
+            lambdax = torch.sigmoid(x[0][0])
+            lambday = torch.sigmoid(x[0][1])
+
+        lambdax = lambdax.detach().numpy()
+        lambday = lambday.detach().numpy()
+
+        speed = np.array([lambdax * UAV_RATE_MAX  + UAV_RATE_MIN,lambday * math.pi*2])
+
+
+        return speed
+"""Critic网络创建，输入为信道状态向量加动作向量，输出为动作Q值，两层隐藏层"""
+class CriticNet(nn.Module):
+    def __init__(self):
+        super(CriticNet, self).__init__()
+        self.input_size = 3 + K * 2 + 2
+        self.output_size = 1
+        self.fc1 = nn.Linear(self.input_size, HIDDEN_SIZE_1)
+        self.dropout1 = nn.Dropout(p=0.5)  # 添加dropout层
+        self.fc2 = nn.Linear(HIDDEN_SIZE_1, HIDDEN_SIZE_2)
+        self.dropout2 = nn.Dropout(p=0.5)  # 添加dropout层
+        self.fc3 = nn.Linear(HIDDEN_SIZE_2, HIDDEN_SIZE_3)
+        self.dropout3 = nn.Dropout(p=0.5)  # 添加dropout层
+        self.fc4 = nn.Linear(HIDDEN_SIZE_3, HIDDEN_SIZE_4)
+        self.dropout4 = nn.Dropout(p=0.5)  # 添加dropout层
+        self.fc5 = nn.Linear(HIDDEN_SIZE_4, self.output_size)
+        # 初始化权重
+        nn.init.normal_(self.fc1.weight, mean=0, std=0.1)
+        nn.init.normal_(self.fc2.weight, mean=0, std=0.1)
+        nn.init.normal_(self.fc3.weight, mean=0, std=0.1)
+        nn.init.normal_(self.fc4.weight, mean=0, std=0.1)
+        nn.init.normal_(self.fc5.weight, mean=0, std=0.1)
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = torch.relu(x)
+        x = self.dropout1(x)
+        x = self.fc2(x)
+        x = torch.relu(x)
+        x = self.dropout2(x)
+        x = self.fc3(x)
+        x = torch.relu(x)
+        x = self.dropout3(x)
+        x = self.fc4(x)
+        x = torch.relu(x)
+        x = self.dropout4(x)
+        x = self.fc5(x)
+        return x
+class DDPG:
+    def __init__(self, models,memories):
+        self.critic = models['critic']
+        self.target_critic = models['critic']
+        self.actor = models['actor']
+        self.target_actor = models['actor']
+        self.actor_loss_list = []
+        self.critic_loss_list = []
+
+        # 复制参数到目标网络
+        for target_param, param in zip(self.target_critic.parameters(), self.critic.parameters()):
+            target_param.data.copy_(param.data)
+        for target_param, param in zip(self.target_actor.parameters(), self.actor.parameters()):
+            target_param.data.copy_(param.data)
+        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=LEARNING_RATE, weight_decay=1e-5)
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=LEARNING_RATE, weight_decay=1e-5)
+        self.memory = memories['memory']
+        self.batch_size = BATCH_SIZE
+        self.gamma = GAMMA
+        self.tau = 0.005  # 软更新参数
+
+        torch.save(self.actor.state_dict(), P_A_NET_FILE)
+        torch.save(self.critic.state_dict(), P_C_NET_FILE)
+        torch.save(self.target_actor.state_dict(), T_A_NET_FILE)
+        torch.save(self.target_critic.state_dict(), T_C_NET_FILE)
+
+    def sample_action(self, state):
+        state = torch.FloatTensor(state).unsqueeze(0)
+        action = self.actor.predict(state,0)
+        return action
+
+    @torch.no_grad()
+    def predict_action(self, state):
+        ''' 用于预测，不需要计算梯度
+        '''
+        state = torch.FloatTensor(state).unsqueeze(0)
+        action = self.actor.predict(state,1)
+        #action = np.squeeze(action, axis=0)
+        return action
+
+    def load_net_file(self):
+        self.actor.load_state_dict(torch.load(P_A_NET_FILE))
+        self.critic.load_state_dict(torch.load(P_C_NET_FILE))
+        self.target_actor.load_state_dict(torch.load(T_A_NET_FILE))
+        self.target_critic.load_state_dict(torch.load(T_C_NET_FILE))
+        return self.actor
+
+    def update(self):
+        if len(self.memory) < self.batch_size:  # 当memory中不满足一个批量时，不更新策略
+            return
+        # states_batch, actions_batch, rewards_batch, next_states_batch = self.memory.sample(BATCH_SIZE)
+        # state_batch = torch.tensor(states_batch, dtype=torch.float)
+        # action_batch = torch.tensor(actions_batch, dtype=torch.float)
+        # reward_batch = torch.tensor(rewards_batch, dtype=torch.float)
+        # next_state_batch = torch.tensor(next_states_batch, dtype=torch.float)
+        state, action, reward, next_state = self.memory.sample(self.batch_size)
+        state_batch = torch.FloatTensor(np.array(state))
+        action_batch = torch.FloatTensor(np.array(action))
+        reward_batch = torch.FloatTensor(reward).unsqueeze(1)
+        next_state_batch = torch.FloatTensor(np.array(next_state))
+
+        state_actor_batch = torch.cat((state_batch, action_batch), 1)
+        policy_Q = torch.mean(self.critic(state_actor_batch))
+        actor_loss = -policy_Q
+
+        target_action_batch = self.target_actor.forward(next_state_batch)
+        target_state_actor_batch = torch.cat((next_state_batch, target_action_batch), 1)
+        target_Q = self.target_critic(target_state_actor_batch).detach()
+        label_Q = reward_batch + GAMMA * target_Q
+        critic_loss = ((label_Q - policy_Q) ** 2).mean()
+
+        self.actor_optimizer.zero_grad()
+        actor_loss.backward(retain_graph=True)
+        self.actor_optimizer.step()
+
+        self.critic_optimizer.zero_grad()
+        critic_loss.backward(retain_graph=True)
+        self.critic_optimizer.step()
+
+        self.critic_loss_list.append(critic_loss.item())
+        self.actor_loss_list.append(actor_loss.item())
+        print("Actor loss:",actor_loss.item())
+        print("Critic loss:", critic_loss.item())
+        plot_durations(1, self.critic_loss_list, "critic_loss")
+        torch.save(self.actor.state_dict(), P_A_NET_FILE)
+        torch.save(self.critic.state_dict(), P_C_NET_FILE)
+        torch.save(self.target_actor.state_dict(), T_A_NET_FILE)
+        torch.save(self.target_critic.state_dict(), T_C_NET_FILE)
+        with open("loss_ddpg\\critic_loss" + str(K) + ".txt", 'ab') as f:
+            np.savetxt(f, np.array(critic_loss.detach().numpy()).reshape(-1, 1), fmt='%f', delimiter=' ')
+        plot_durations(3, self.actor_loss_list, "actor_loss")
+        with open("loss_ddpg\\actor_loss" + str(K) + ".txt", 'ab') as f:
+            np.savetxt(f, np.array(actor_loss.detach().numpy()).reshape(-1, 1), fmt='%f', delimiter=' ')
+
+        for target_param, param in zip(self.target_critic.parameters(), self.critic.parameters()):
+            target_param.data.copy_(
+                target_param.data * (1.0 - self.tau) +
+                param.data * self.tau
+            )
+        for target_param, param in zip(self.target_actor.parameters(), self.actor.parameters()):
+            target_param.data.copy_(
+                target_param.data * (1.0 - self.tau) +
+                param.data * self.tau
+            )
+
+
+def plot_durations(num,loss,str):
+    plt.figure(num)
+    plt.clf()
+    plt.title("Training...")
+    plt.xlabel("Episode")
+    plt.ylabel(str)
+    plt.plot(loss)
+    plt.draw()
+    plt.pause(0.01)
