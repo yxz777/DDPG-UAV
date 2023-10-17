@@ -1,0 +1,133 @@
+from typing import List, Any
+
+import numpy
+import math
+import random
+from globalVars import GlobalVar
+
+import pandas as pd
+
+
+global_value = GlobalVar()
+M = global_value.M
+K = global_value.K
+H = global_value.H
+R_X = global_value.R_X
+R_Y = global_value.R_Y
+UAV_START_AXIS = global_value.UAV_START_AXIS
+UAV_RATE_MAX = global_value.UAV_RATE_MAX
+BEITA = global_value.BEITA
+
+
+ROOT=global_value.ROOT
+T_NUM=global_value.T_NUM
+
+class Axis_Cls():
+    def __init__(self, x_axis, y_axis,H):
+        self.x_axis=x_axis
+        self.y_axis=y_axis
+        self.H=H
+
+
+class User_Cls():
+    def __init__(self,id, x_axis, y_axis, Qth):
+        self.id = id
+        self.x_axis=x_axis
+        self.y_axis=y_axis
+        self.Qth = Qth
+
+class User_Status_Cls():
+    def __init__(self,id):
+        self.id = id
+        self.state = 0
+        self.rate =0
+
+
+def produce_gain(source_axis, dist_axis):
+    distance = math.sqrt((source_axis.x_axis) ** 2 + dist_axis.y_axis ** 2 + H**2)
+    gain = BEITA / ( distance ) ** 2
+    return gain
+
+def produce_user_inf(K,R_X,R_Y):
+    user_inf = []
+    i = 0
+    while i < (K):
+        x_dis = random.uniform(0, R_X)
+        y_dis = random.uniform(0, R_Y)
+        q_th = random.uniform(0, Q_TH)
+        user = User_Cls(i, x_dis, y_dis,q_th)
+        user_inf.append(user)
+        i+=1
+    return user_inf
+
+
+def get_user_list(user_set):
+    user_array =[]
+    for k in range(len(user_set)):
+        id = user_set[k].id
+        x = user_set[k].x_axis
+        y = user_set[k].y_axis
+        Qth = user_set[k].Qth
+        #cell_id = user_set[k].cell_id
+        array = numpy.array([id, x, y, Qth]).T
+        user_array.append(array)
+
+    return user_array
+
+
+def save_user_inf(ROOT, T_NUM):
+
+    for i in range(T_NUM):
+        user_set = produce_user_inf(K, R_X, R_Y)
+        #user_set = user_cell_matching(cell_axis_set, user_set)
+        user_list = get_user_list(user_set)
+        user_norm_list = get_user_axis_norm(user_set)
+        with open(ROOT[0], 'ab') as f:
+            numpy.savetxt(f, user_list, fmt='%.12f', delimiter=' ')
+        with open(ROOT[1], 'ab') as f:
+            numpy.savetxt(f, user_norm_list, fmt='%.12f', delimiter=' ')
+    print("保存user坐标文件成功")
+
+def get_user_inf_list(cell_axis_set):
+    cell_axis_array =[]
+    for k in range(len(cell_axis_set)):
+        id = cell_axis_set[k].id
+        x = cell_axis_set[k].x_axis
+        y = cell_axis_set[k].y_axis
+        array = numpy.array([id, x, y]).T
+        cell_axis_array.append(array)
+    return cell_axis_array
+
+
+def load_file(file_name,len,step):
+    if file_name==ROOT[0]: #user
+        data=pd.read_csv(ROOT[0],header=None,delim_whitespace=True,skiprows=step*K,nrows=len)
+    elif file_name==ROOT[1]: #user norm
+        data=pd.read_csv(ROOT[1],header=None,delim_whitespace=True,skiprows=step*K,nrows=len)
+    elif file_name==ROOT[5]: #user Q_th
+        data=pd.read_csv(ROOT[5],header=None,delim_whitespace=True,skiprows=step*K,nrows=len)
+    data=numpy.array(data)
+    return data
+
+def get_user_axis_norm(user_axis_set):
+    user_axis_norm_array: list[Any] =[]
+    d = math.sqrt((R_X )**2 + (R_Y )**2)
+    for k in range(len(user_axis_set)):
+        x = user_axis_set[k].x_axis
+        y = user_axis_set[k].y_axis
+        x_dis_norm = x / d
+        y_dis_norm = y / d
+        array = numpy.array([x_dis_norm, y_dis_norm]).T
+        user_axis_norm_array.append(array)
+    return user_axis_norm_array
+
+
+def main():
+
+    save_user_inf(ROOT, T_NUM)
+
+
+    flag_end = 1
+
+if __name__ == '__main__':
+    main()
