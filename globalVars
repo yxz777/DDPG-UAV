@@ -1,0 +1,105 @@
+
+import math
+class GlobalVar:
+    def __init__(self):
+        #self.N= 4
+        self.K = 10               # user数目
+        self.M = 1  #UAV数目
+        self.T = 100  #UAV一次续航时长。单位s
+        self.USER_POWER_MAX = 0.2 #单位W
+
+
+        self.V = 20  # % 飞行速度
+
+
+        #计算速率参数
+        self.Qth= 1         # user最大传输数据量
+        self.BAND = 5000             # 带宽
+        self.NOISE=1e-13
+        self.P_N =  self.USER_POWER_MAX / self.NOISE
+
+
+        self.R_X = 200     # UAV巡航范围 x轴方向 单位m
+        self.R_Y = 200     #  UAV巡航范围 y轴方向
+        self.H = 100              # UAV高度
+        self.UAV_RATE_MAX = 20        # UAV最大速率
+        self.UAV_RATE_MIN = 10
+        self.UAV_START_AXIS = [0, 0 ,self.H]
+        self.UAV_END_AXIS = [0, 0 ,self.H]
+        self.EPS_END = 0.02
+        self.EPS_START = 0.5  ########
+        self.EPS_DECAY = 100
+        self.TARGET_UPDATE = 20
+        self.COMPARE_TIME_MAX = 50
+        self.MEMORY_SIZE = 1280
+
+
+
+        #channel_gain相关的常数
+        self.BEITA = 1e-3  # -30dB
+        self.T_NUM = 1000 #simulation次数
+        self.R_MAX = 15  # % 簇半径
+        self.H_d_MAX = math.sqrt(self.R_MAX**2+self.H**2)
+        self.D_MAX = self.R_MAX * 2  # 簇中两个node的最大距离
+        self.N = self.T / (self.R_MAX * 2 / self.V)  # 最大cluster的数目，也就是hover点的数目
+        self.SLOT_T = self.T / self.N
+        self.SLOT_F_T = 0.5  * self.SLOT_T #每个slot飞行时间
+        self.SLOT_H_T = 0.5 * self.SLOT_T #每个slot hover时间
+
+        #% 下面是hover与飞行功率相关参数
+        self.nr = 4
+        self.A = 2
+        self.R = 0.4
+        self.W = 19.6
+        self.k = 0.1
+        self.ohm = 300
+        self.s = 0.05
+        self.rou = 1.225
+        self.derta = 0.0012
+        self.Utip = 120
+        self.v_zero = 4.03
+        self.d_zero = 0.6
+        self.po = (self.derta * self.rou * self.s * self.A * (self.ohm ** 3) * ( self.R ** 3)) / 8
+        self.pi = ((1 + self.k) * (math.sqrt(self.W) ** 3)) / math.sqrt(2 * self.rou * self.A)
+        self.FLY_P = self.po * (1 + (3 * self.V ^ 2) / (self.Utip ^ 2)) + self.pi * self.v_zero / self.V + self.d_zero * self.rou *self.s * self.A * (self.V ^ 3) / 2
+        self.HOVER_P=self.po+self.pi
+
+
+       #DQN相关参数
+        self.EPOCHS = 100
+        self.BATCH_SIZE = 128 # 每批进入神经网络的数据
+        self.GAMMA = 0.99
+        self.Learn_size = 4
+        self.LEARNING_RATE = 1e-4  # 神经网络学习率
+        self.DEVICE = "cpu"
+        self.DIR_COEF = 0.1
+
+        self.ROOT = ["network_data\\user_inf" + "-K" + str(10) + ".txt",
+                     "network_data\\user_axis_norm" + "-K" + str(10) + ".txt",
+                     "reward_data\\reward" + "-K" + str(self.K) + ".txt",
+                     "network_data\\memory" + "-K" + str(self.EPOCHS) + str(self.K)+ ".csv",
+                     "network_data\\memory_action" + "-K" + str(self.EPOCHS) + ".xlsx",
+                     "network_data\\user_Qth-K10-Qth"+ str(self.Qth)+".txt"]
+
+        self.test_ROOT = ["test_data\\"+str(self.K)+"_"+str(self.Qth)+"\\P_loss" + "-K" + str(self.K) + ".txt",
+                          "test_data\\"+str(self.K)+"_"+str(self.Qth)+"\\successful_user" + "-K" + str(self.K) + ".txt",
+                          "test_data\\"+str(self.K)+"_"+str(self.Qth)+"\\UAV_AXIS" + "-K" + str(self.K) + ".txt",
+                          "test_data\\"+str(self.K)+"_"+str(self.Qth)+"\\SUM_R" + "-K" + str(self.K) + ".txt",
+                          "test_data\\"+str(self.K)+"_"+str(self.Qth)+"\\average_success" + "-K" + str(self.K) + ".txt",
+                          "test_data\\"+str(self.K)+"_"+str(self.Qth),
+                          "test_data\\"+str(self.K)+"_"+str(self.Qth)+"\\image",
+                          "test_data\\"+str(self.K)+"_"+str(self.Qth)+"\\image\\slot_id"]
+
+        self.P_A_NET_FILE = "net_file/policy_actor.pkl"
+        self.P_C_NET_FILE = "net_file/policy_critic.pkl"
+        self.T_A_NET_FILE = "net_file/target_actor.pkl"
+        self.T_C_NET_FILE = "net_file/target_critic.pkl"
+
+        #神经网络相关参数
+
+        self.HIDDEN_SIZE_1 = 100     #神经网络隐藏节点个数
+        self.HIDDEN_SIZE_2 = 150
+        self.HIDDEN_SIZE_3 = 100
+        self.HIDDEN_SIZE_4 = 50
+
+
