@@ -1,0 +1,402 @@
+import torch
+import pickle
+import numpy
+import Compute
+import module
+import math
+from globalVars import GlobalVar
+import matplotlib.pyplot as plt
+import numpy as np
+import network_data
+from module import ActorNet
+from module import CriticNet
+import csv
+from collections import deque
+import random
+
+
+#全局变量定义
+global_value=GlobalVar()
+K=global_value.K
+M=global_value.M
+DEVICE=global_value.DEVICE
+BAND=global_value.BAND
+NOISE=global_value.NOISE
+R_X = global_value.R_X
+R_Y = global_value.R_Y
+V=global_value.V
+H=global_value.H
+N = global_value.N
+ROOT=global_value.ROOT
+test_ROOT=global_value.test_ROOT
+BATCH_SIZE=global_value.BATCH_SIZE
+SLOT_NUMBER=global_value.T_NUM
+P_A_NET_FILE=global_value.P_A_NET_FILE
+P_C_NET_FILE=global_value.P_C_NET_FILE
+T_A_NET_FILE=global_value.T_A_NET_FILE
+T_C_NET_FILE=global_value.T_C_NET_FILE
+COMPARE_TIME_MAX=global_value.COMPARE_TIME_MAX
+MEMORY_SIZE =global_value.MEMORY_SIZE
+
+EPOCHS=global_value.EPOCHS
+EPSILON=0.9
+EPS_START=global_value.EPS_START
+LEARNING_RATE=1e-5
+GAMMA=global_value.GAMMA
+EPS_END=global_value.EPS_END
+EPS_START=global_value.EPS_START
+EPS_DECAY=global_value.EPS_DECAY
+U = 0.25
+
+FLY_P=global_value.FLY_P
+HOVER_P=global_value.HOVER_P
+SLOT_F_T=global_value.SLOT_F_T
+
+SLOT_H_T=global_value.SLOT_H_T
+UAV_START_AXIS=global_value.UAV_START_AXIS
+Learn_size=global_value.Learn_size
+SLOT_T=global_value.SLOT_T
+class Replaybuffer:
+    def __init__(self ):
+        self.max_size = SLOT_NUMBER * math.ceil(N)
+        self.mem_size = self.max_size
+        self.memory = []
+        self.batch_size = BATCH_SIZE
+        self.mem_cnt = 0
+        self.state_dim= 3 + 2 * K
+        self.action_dim=2
+        self.state_memory = np.zeros((self.mem_size, self.state_dim))
+        self.action_memory = np.zeros((self.mem_size,self.action_dim))
+        self.reward_memory = np.zeros((self.mem_size,1))
+        self.next_state_memory = np.zeros((self.mem_size, self.state_dim))
+
+    def store_transition(self, state, action, reward, state_):
+        mem_idx = self.mem_cnt % self.mem_size
+
+        self.state_memory[mem_idx] = state
+        self.action_memory[mem_idx]= action
+        self.reward_memory[mem_idx] = reward
+        self.next_state_memory[mem_idx] = state_
+        self.memory.append((state, action, reward, state_))
+        self.mem_cnt += 1
+        #print(self.mem_cnt)
+        #print('[%d men_cnt: ' % (self.mem_cnt))
+
+    def sample_buffer(self,save=0):
+        #print('[%d men_cnt_1: ' % (self.mem_cnt))
+        mem_len = min(self.mem_size, self.mem_cnt)
+        if save == 0:
+            batch = np.random.choice(mem_len, self.batch_size, replace=True)
+        else:
+            batch = [i for i in range(0,670)]
+        states = self.state_memory[batch]
+        actions = self.action_memory[batch]
+        rewards = self.reward_memory[batch]
+        states_ = self.next_state_memory[batch]
+        return states, actions, rewards, states_
+
+    def __len__(self):
+        return self.mem_cnt
+    def __iter__(self):
+        return iter(self.memory)
+
+    def save_memory_replay(self, filename):
+        with open(filename, 'w', newline='') as f:
+            writer = csv.writer(f)
+            for experience in self.memory:
+                writer.writerow(experience)
+
+    def merge(self, replay_buffer):
+        merged_buffer = ReplayBuffer()
+        merged_buffer.state_memory = np.concatenate((self.state_memory, replay_buffer.state_memory))
+        merged_buffer.action_memory = np.concatenate((self.action_memory, replay_buffer.action_memory))
+        merged_buffer.reward_memory = np.concatenate((self.reward_memory, replay_buffer.reward_memory))
+        merged_buffer.next_state_memory = np.concatenate((self.next_state_memory, replay_buffer.next_state_memory))
+        merged_buffer.mem_cnt = self.mem_cnt + replay_buffer.mem_cnt
+        return merged_buffer
+
+class ReplayBuffer:
+    def __init__(self) :
+        self.capacity = SLOT_NUMBER * math.ceil(N)
+        self.buffer = deque(maxlen=self.capacity)
+    def push(self,transitions):
+        '''_summary_
+        Args:
+            trainsitions (tuple): _description_
+        '''
+        self.buffer.append(transitions)
+    def sample(self, batch_size: int, sequential: bool = False):
+        if batch_size > len(self.buffer):
+            batch_size = len(self.buffer)
+        if sequential: # sequential sampling
+            rand = random.randint(0, len(self.buffer) - batch_size)
+            batch = [self.buffer[i] for i in range(rand, rand + batch_size)]
+            return zip(*batch)
+        else:
+            batch = random.sample(self.buffer, batch_size)
+            return zip(*batch)
+    def clear(self):
+        self.buffer.clear()
+    def __len__(self):
+        return len(self.buffer)
+
+    def __iter__(self):
+        return iter(self.buffer)
+
+    def save_memory_replay(self, filename):
+        with open(filename, 'w', newline='') as f:
+            writer = csv.writer(f)
+            for experience in self.buffer:
+                writer.writerow(experience)
+import os
+def save_file(ROOT,file):
+    with open(ROOT, 'ab') as f:
+        numpy.savetxt(f, file, fmt='%.12f', delimiter=' ')
+# def save_memory_replay(memory, filename):
+#     with open(filename, 'wb') as f:
+#         pickle.dump(memory, f)
+
+def initialize(K,slot_id):
+    user_inf_set = network_data.load_file(ROOT[0], K, slot_id)
+    user_norm_list = network_data.load_file(ROOT[1], K, slot_id)
+    user_Q_th = network_data.load_file(ROOT[5], K, slot_id)
+    user_status_set = []
+    for i in range(K):
+        user_status = network_data.User_Status_Cls(i)
+        user_status_set.append(user_status)
+    for i in range(K):
+        user_inf_set[i][3]=user_Q_th[i][0]
+    return user_inf_set,user_norm_list,user_status_set
+def get_step_status(uav_axis, user_norm_list):
+    DD = math.sqrt((R_X) ** 2 + (R_Y) ** 2)  #最远距离
+    uav_axis_norm = np.array(uav_axis) / DD
+    status = np.append(uav_axis_norm, user_norm_list)
+    status = torch.tensor(status, dtype=torch.float)
+    status = status.flatten()
+    return status
+def uav_path(user_inf_set,uav_x, uav_y,sussessful_user=0,r=0,slot_id=0,save=0):
+    plt.figure(2)
+    plt.clf()
+    x = []
+    y = []
+    for k in range(len(user_inf_set)):
+        x.append(user_inf_set[k][1])
+        y.append(user_inf_set[k][2])
+    plt.xlim(0, R_X)
+    plt.ylim(0, R_Y)
+    plt.subplots_adjust(wspace=0.5, hspace=0.5)
+    plt.scatter(x, y,color='deepskyblue',linewidth=1)
+
+    # 绘制无人机路径
+    plt.plot(uav_x, uav_y,color='g')
+
+    # 设置图形的标题和轴标签
+    plt.title('UAV path')
+    plt.xlabel('x')
+    plt.ylabel('y')
+    # 显示图形
+    if save == 1:
+        plt.text(145, 223, "sussessful_user:" + str(sussessful_user), fontsize=14, color='black')
+        plt.text(145, 210, "average_r:" + str(int(r/ 10)), fontsize=14, color='black')
+        plt.savefig(test_ROOT[7] + str(slot_id), dpi=1200)
+    else:
+        plt.draw()
+        plt.pause(0.01)  # 暂停一下，以便更新图表
+
+def load_memory(file_path):
+    with open(file_path, 'rb') as f:
+        buffer = pickle.load(f)
+    return buffer
+
+
+
+
+def dqn_train(agent):
+    for slot_id in range(SLOT_NUMBER):
+        print("slot_id",slot_id)
+        eps = EPOCHS
+        max_reward_set = []
+        max_reward_sum =0
+        max_status_set =[]
+        max_action_set=[]
+        max_next_status_set=[]
+
+        while eps>0:
+            eps -= 1
+            #print(eps)
+            user_inf_set, user_norm_list, user_status_set = initialize(K, slot_id)  # 初始化
+            uav_axis = UAV_START_AXIS
+            uav_path_axis = []
+            status = get_step_status(uav_axis, user_norm_list)
+
+            slot_reward = [ ]
+            action_set =[]
+            status_set =[]
+            next_status_set =[]
+
+            uav_x = []
+            uav_y = []
+            uav_x.append(uav_axis[0])
+            uav_y.append(uav_axis[1])
+            uav_path_axis.append(uav_axis)
+            step = math.ceil(N)
+
+            reward_sum =0
+            axis_visit = 0
+            Target_d=Compute.compute_distance_shuzu(uav_axis,UAV_START_AXIS)
+            while Target_d < (step-1)*V*SLOT_T and step !=0:
+                #if eps == 0:
+                #    done = True
+                step -= 1
+                step_ = math.ceil(N) - step
+                #print(step_)
+                state_usq = torch.unsqueeze(status, 0)
+                flag_r = 0
+                flag_o = 0
+                compare_time = 0
+                while flag_r == 0:
+                    uav_speed = agent.sample_action(state_usq)
+                    flag_o = Compute.action_avaible(uav_axis, uav_speed)
+                     #print("uav_speed",uav_speed)
+                    if flag_o == 0:
+                        continue
+                    else:
+                        flag_r = Compute.avoid_path_repetiton(uav_axis,uav_path_axis,uav_speed,step_)
+                        compare_time += 1
+                        if compare_time > COMPARE_TIME_MAX:
+                            break
+                uav_axis_next = Compute.get_uav_axis(uav_axis, uav_speed)
+                uav_x.append(uav_axis_next[0])
+                uav_y.append(uav_axis_next[1])
+                #uav_path(user_inf_set, uav_x, uav_y)
+                uav_path_axis.append(uav_axis_next)
+                reward, user_status_set,slot_sum_r,axis_visit= Compute.compute_reward_DQN(uav_axis_next, user_inf_set,user_status_set,flag_r,axis_visit)  # Compute.compute_reward_DQN(uav_axis,user_inf_set,user_status_set,slot_id)
+                reward_sum+=reward
+                slot_reward.append(reward)
+                status_next = get_step_status(uav_axis_next, user_norm_list)
+                store_flag = 1
+                action_set.append(uav_speed)
+                uav_axis = uav_axis_next
+                status_set.append(status)
+                status = status_next
+                next_status_set.append(status_next)
+                Target_d = Compute.compute_distance_shuzu(uav_axis, UAV_START_AXIS)
+                if reward_sum > max_reward_sum:
+                  max_reward_set = slot_reward
+                  max_action_set = action_set
+                  max_status_set = status_set
+                  max_next_status_set = next_status_set
+                  max_reward_sum = reward_sum
+                  # max_uav_x = uav_x
+                  # max_uav_y = uav_y
+                  # max_axis_visit = axis_visit
+        for i in range(len(max_reward_set)):
+            agent.memory.push((max_status_set[i], max_action_set[i], max_reward_set[i], max_next_status_set[i]))
+            #uav_path(user_inf_set, max_uav_x, max_uav_y)
+        with open("reward_data\\reward" + str(K) + ".txt", 'ab') as f:
+            np.savetxt(f, np.array(max_reward_set).reshape(-1, 1), fmt='%f', delimiter=' ')
+        agent.memory.save_memory_replay(ROOT[3])
+        with open("reward_data\\slot_id" + str(K) + ".txt", 'ab') as f:
+            np.savetxt(f, np.array(slot_id).reshape(-1, 1), fmt='%f', delimiter=' ')
+        agent.update()
+
+    print("训练结束")
+def dqn_test(agent):
+    T_sum_r =[]
+    UAV_AXIS=[]
+    successful_user=[]
+    #agent.load_net_file
+
+    if not os.path.exists(test_ROOT[5]):
+        os.makedirs(test_ROOT[5])
+        os.makedirs(test_ROOT[6])
+    test_num = 100
+    for slot_id in range(test_num):
+        Compute.progress_bar(slot_id,test_num)
+        user_inf_set, user_norm_list, user_status_set  = initialize(K, slot_id)  # 初始化
+        uav_axis = UAV_START_AXIS
+        uav_path_axis = np.zeros((67, 3))
+        uav_path_axis[:, 2] = 100
+        status = get_step_status(uav_axis, user_norm_list)
+        UAV_axis_slot = []
+        UAV_axis_slot.append(uav_axis)
+
+        Target_d = Compute.compute_distance_shuzu(uav_axis, UAV_START_AXIS)
+
+        uav_x = []
+        uav_y = []
+        uav_x.append(uav_axis[0])
+        uav_y.append(uav_axis[1])
+        #uav_path(user_inf_set, uav_x, uav_y)
+        step=math.ceil(N)
+        slot_sum_r=0
+        axis_visit = 0
+        while Target_d < (step-1)*V and step !=0:
+            step -= 1
+            step_ = math.ceil(N) - step
+            state_usq = torch.unsqueeze(status, 0)
+            #print(state_usq)
+            uav_speed = agent.predict_action(state_usq)
+            #print(uav_speed)
+            flag = Compute.avoid_path_repetiton(uav_axis,uav_path_axis,uav_speed,step_)
+            uav_axis_next = Compute.get_uav_axis(uav_axis,uav_speed)
+           # action_matrix = action_set[action_id].status_matrix
+            reward, user_status_set,slot_sum_r,axis_visit= Compute.compute_reward_DQN(uav_axis_next,user_inf_set,user_status_set,flag,axis_visit)
+            status_next = get_step_status(uav_axis_next, user_norm_list)
+            uav_axis = uav_axis_next
+            UAV_axis_slot.append(uav_axis)
+            status = status_next
+            Target_d = Compute.compute_distance_shuzu(uav_axis, UAV_START_AXIS)
+
+            uav_x.append(uav_axis_next[0])
+            uav_y.append(uav_axis_next[1])
+
+            uav_path(user_inf_set, uav_x, uav_y)
+            uav_path_axis[math.ceil(N)-step] = uav_axis_next
+
+            '''if action_id != 8:
+                P_loss += FLY_P * SLOT_F_T
+            else:
+                P_loss += HOVER_P * SLOT_H_T'''
+        slot_sussessful_user=0
+        for i in range(len(user_inf_set)):
+            Q_=user_inf_set[i][3]*1e6
+            q =user_status_set[i].rate*SLOT_T
+            if Q_ < q:
+                slot_sussessful_user +=1
+        successful_user.append(slot_sussessful_user)
+        uav_path(user_inf_set, uav_x, uav_y, slot_sussessful_user, slot_sum_r, slot_id, save = 1)
+
+        # UAV_AXIS.append(np.array(UAV_axis_slot))
+        # SUM_R.append(np.array(SUM_r_slot))
+
+        UAV_AXIS.extend(UAV_axis_slot)#二维
+        #UAV_AXIS.append(UAV_axis_slot)#三维
+        T_sum_r.append(slot_sum_r/K)
+    #save_file(test_ROOT[0], [P_loss])
+    save_file(test_ROOT[1], successful_user)
+    save_file(test_ROOT[2], UAV_AXIS)
+    save_file(test_ROOT[3], T_sum_r)
+    save_file(test_ROOT[4], [sum(T_sum_r) / len(T_sum_r)])
+    save_file(test_ROOT[4], [sum(successful_user)/len(successful_user)])
+
+    Compute.progress_bar(slot_id+1,test_num)
+
+
+        #print('[%d] reward: %.3f',(slot_id,reward))
+        #if reward>0:
+           # EE_sum+=reward
+    #averag_EE=EE_sum/1000
+    #print('%.3f',averag_EE)
+
+def main():
+    memories = {"memory":ReplayBuffer()}
+    models = {"actor":ActorNet(),"critic":CriticNet()}
+    agent = module.DDPG(models,memories)
+    dqn_train(agent)
+    dqn_test(agent)
+
+
+
+if __name__ == '__main__':
+    main()
