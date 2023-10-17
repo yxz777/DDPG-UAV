@@ -1,0 +1,136 @@
+import math
+import numpy as np
+from globalVars import GlobalVar
+import network_data
+#全局变量定义
+global_value=GlobalVar()
+M=global_value.M
+K=global_value.K
+H = global_value.H
+T = global_value.T
+R_MAX =global_value.R_MAX
+Pt = global_value.USER_POWER_MAX
+NOISE = global_value.NOISE
+V =global_value.V
+SLOT_T = global_value.SLOT_T
+
+R_X = global_value.R_X
+R_Y = global_value.R_Y
+
+BAND=global_value.BAND
+P_N=global_value.P_N
+FLY_P=global_value.FLY_P
+HOVER_P=global_value.HOVER_P
+BEITA = global_value.BEITA
+H_d_MAX=global_value.H_d_MAX
+UAV_END_AXIS =global_value.UAV_END_AXIS
+N=global_value.N
+#T_SLOT = T/MAX_C
+def action_avaible(uav_axis,speed):#动作可行性2023.2.3
+    uav_axis_next=get_uav_axis(uav_axis,speed)
+    if uav_axis_next[0]>R_X or uav_axis_next[0]<0 or uav_axis_next[1]>R_Y or uav_axis_next[1]<0:
+        flag = 0
+    else:
+        flag = 1
+    return flag
+def avoid_path_repetiton(uav_axis,uav_path_axis,speed,step):#避免重复
+    uav_axis_next = get_uav_axis(uav_axis,speed)
+    uav_axis_next = network_data.Axis_Cls(uav_axis_next[0], uav_axis_next[1], uav_axis_next[2])
+    a=1
+    for i in range(step):
+        uav_path_axis_=network_data.Axis_Cls(uav_path_axis[i][0], uav_path_axis[i][1], uav_path_axis[i][2])
+        d=compute_distance(uav_axis_next, uav_path_axis_)
+        if d < R_MAX:
+            a=0
+            break
+    return a
+
+
+def get_uav_axis(uav_axis_current, speed):#动作移动
+    action_move_d = [math.cos(speed[1]),math.sin(speed[1]), 0]
+    uav_axis_next = list(np.array(uav_axis_current) + np.array(action_move_d) * speed[0] * SLOT_T)
+    # uav_axis_next = [0,0,100]
+    # uav_axis_next[0] = np.array(uav_axis_current[0]) + speed[0] * SLOT_T
+    # uav_axis_next[1] = np.array(uav_axis_current[1]) + speed[1] * SLOT_T
+    return uav_axis_next
+
+def progress_bar(finish_tasks_number, tasks_number):
+    percentage = round(finish_tasks_number / tasks_number * 100)
+    print("\r进度: {}%: ".format(percentage), "▓" * (percentage // 2), end="")
+def compute_rate(gain,inter_gain,gain_set):
+    sinr = gain*Pt/(NOISE)
+    rate=(1/len(gain_set))*BAND*math.log(1+sinr,2)
+    return rate
+def compute_rate_set(gain_set):
+    rate_set = []
+    for i in range(len(gain_set)):
+        gain = gain_set[i]
+        gain_sum = sum(gain_set) - gain
+        rate=compute_rate(gain, gain_sum,gain_set)
+        rate_set.append(rate)
+    return rate_set
+
+def compute_distance(source_axis, dist_axis):#改2023.2.3
+    distance = math.sqrt((source_axis.x_axis-dist_axis.x_axis) ** 2 + (source_axis.y_axis-dist_axis.y_axis) ** 2 + (source_axis.H-dist_axis.H) **2)
+    return distance
+def compute_distance_shuzu(source_axis, dist_axis):#改2023.2.3
+    distance = math.sqrt((source_axis[0]-dist_axis[0]) ** 2 + (source_axis[1]-dist_axis[1]) ** 2 + (source_axis[2]-dist_axis[2]) **2)
+    return distance
+def produce_gain(source_axis, dist_axis):#改2023.2.3
+    distance = math.sqrt((source_axis.x_axis-dist_axis.x_axis) ** 2 + (source_axis.y_axis-dist_axis.y_axis) ** 2 + dist_axis.H **2)
+    gain = BEITA / ( distance ) ** 2
+    return gain
+
+def compute_reward_DQN(uav_axis,user_inf_set,user_status_set,flag_r,axis_visit):
+    beta = 0.015
+    eta = 0.15
+    rou = 0.2
+    theta = 0.5
+    id_set = []
+    gain_set =[]
+    uav_axis = network_data.Axis_Cls(uav_axis[0], uav_axis[1], uav_axis[2])
+
+    for k in range (K):
+        if user_status_set[k].state == 0:
+            user_axis = network_data.Axis_Cls(user_inf_set[k][1],user_inf_set[k][2],100)
+            d = compute_distance(user_axis,uav_axis)
+            if d < R_MAX:
+                gain= produce_gain(user_axis,uav_axis)
+                id = k
+                id_set.append(id)
+                gain_set.append(gain)
+                user_status_set[k].state = 1  # 设置已经访问
+                axis_visit += 1
+
+    rate_set = compute_rate_set(gain_set)
+    user_num = len(rate_set)
+    if user_num == 0:
+        slot_sum_r = sum(rate_set)
+    else:
+        slot_sum_r =sum(rate_set) / user_num
+    r_s = beta * slot_sum_r / (K * math.ceil(N))
+   # sum_r+=slot_sum_r
+
+    for k in range(K):
+        for i in range(len(id_set)):
+            if k == id_set[i]:
+                user_status_set[k].rate += rate_set[i]
+    '''for i in range(len(user_inf_set)):
+        if user_inf_set[i][3] * 10000 < user_status_set[i].rate:
+            user_status_set[k].state = 1'''
+
+    temp = UAV_END_AXIS
+    end_axis = network_data.Axis_Cls(temp[0],temp[1],temp[2])
+    d_s = compute_distance(uav_axis, end_axis)
+    r_d = eta / math.exp(d_s)
+    #tmp = math.log(sum_r,2)
+
+    #路径重复的惩罚
+    r_v = - (-flag_r + 1) * theta
+
+    #服务节点的奖励
+    r_sv = axis_visit * rou
+
+    reward = r_s +r_d + r_v + r_sv
+    #重复路径惩罚，服务完的节点数累加
+    return reward, user_status_set,slot_sum_r,axis_visit
